@@ -28,6 +28,8 @@ type panel struct {
 	changeHandler  PanelStateChangeHandler
 }
 
+
+// 共享定时器
 type sharedTicker struct {
 	sync.Mutex
 	started  bool
@@ -36,46 +38,69 @@ type sharedTicker struct {
 	panels   map[*panel]struct{}
 }
 
+// 全局变量
 var tickerMap sync.Map // 共用 ticker
 
 // NewPanel .
-func NewPanel(changeHandler PanelStateChangeHandler,
-	defaultOptions Options) (Panel, error) {
+func NewPanel(changeHandler PanelStateChangeHandler, defaultOptions Options) (Panel, error) {
+
+	// 桶大小
 	if defaultOptions.BucketTime <= 0 {
 		defaultOptions.BucketTime = defaultBucketTime
 	}
 
+	// 桶数目
 	if defaultOptions.BucketNums <= 0 {
 		defaultOptions.BucketNums = defaultBucketNums
 	}
 
+	// 冷却时间
 	if defaultOptions.CoolingTimeout <= 0 {
 		defaultOptions.CoolingTimeout = defaultCoolingTimeout
 	}
 
+	// 探查时间
 	if defaultOptions.DetectTimeout <= 0 {
 		defaultOptions.DetectTimeout = defaultDetectTimeout
 	}
+
+	// 这里创建熔断器，但是并没有使用，只是用来检查参数是否合法
 	_, err := newBreaker(defaultOptions)
 	if err != nil {
 		return nil, err
 	}
+
+	// 面板
 	p := &panel{
 		breakers:       skipmap.NewString(),
 		defaultOptions: defaultOptions,
 		changeHandler:  changeHandler,
 	}
-	ti, _ := tickerMap.LoadOrStore(p.defaultOptions.BucketTime,
-		&sharedTicker{panels: make(map[*panel]struct{}), stopChan: make(chan bool, 1)})
+
+	// 根据桶时间大小维护不同计时器
+	ti, _ := tickerMap.LoadOrStore(
+		p.defaultOptions.BucketTime,
+		&sharedTicker{
+			panels: make(map[*panel]struct{}),
+			stopChan: make(chan bool, 1),
+		},
+	)
+
+	// 把当前面板保存到全局计时器里
 	t := ti.(*sharedTicker)
 	t.Lock()
 	t.panels[p] = struct{}{}
+
+	// 如果当前计时器尚未启动，就启动它。
 	if !t.started {
 		t.started = true
 		t.ticker = time.NewTicker(p.defaultOptions.BucketTime)
 		go t.tick(t.ticker)
 	}
+
 	t.Unlock()
+
+
 	return p, nil
 }
 
@@ -177,8 +202,11 @@ func (t *sharedTicker) tick(ticker *time.Ticker) {
 		select {
 		case <-ticker.C:
 			t.Lock()
+			// 遍历所有面板
 			for p := range t.panels {
+				// 遍历所有熔断器
 				p.breakers.Range(func(_ string, value interface{}) bool {
+					// 逐个触发 tick() 定时通知
 					if b, ok := value.(*breaker); ok {
 						b.metricer.tick()
 					}

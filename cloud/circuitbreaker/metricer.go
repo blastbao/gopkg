@@ -24,9 +24,9 @@ import (
 
 // bucket holds counts of failures and successes
 type bucket struct {
-	failure int64
-	success int64
-	timeout int64
+	failure int64	// 失败数
+	success int64	// 成功数
+	timeout int64	// 超时数
 }
 
 // Reset resets the counts to 0 and refreshes the time stamp
@@ -60,8 +60,11 @@ func (b *bucket) Timeouts() int64 {
 	return atomic.LoadInt64(&b.timeout)
 }
 
+
 // window maintains a ring of buckets and increments the failure and success
 // counts of the current bucket.
+//
+// 滑动窗口
 type window struct {
 	rw      syncx.RWMutex
 	oldest  int32    // oldest perPBucket index
@@ -88,16 +91,20 @@ func newWindow() metricer {
 
 // newWindowWithOptions creates a new perPWindow.
 func newWindowWithOptions(bucketTime time.Duration, bucketNums int32) (metricer, error) {
+
+	// 至少 100 个桶
 	if bucketNums < 100 {
 		return nil, fmt.Errorf("BucketNums can't be less than 100")
 	}
 
+	// 初始化
 	w := new(window)
 	w.rw = syncx.NewRWMutex()
 	w.bucketNums = bucketNums
 	w.bucketTime = bucketTime
 	w.buckets = make([]bucket, w.bucketNums)
 
+	// 重置
 	w.Reset()
 	return w, nil
 }
@@ -107,10 +114,11 @@ func (w *window) Succeed() {
 	rwx := w.rw.RLocker()
 	rwx.Lock()
 	b := w.getBucket()
-	atomic.StoreInt64(&w.errStart, 0)
-	atomic.StoreInt64(&w.conseErr, 0)
-	atomic.AddInt64(&w.allSuccess, 1)
+	atomic.StoreInt64(&w.errStart, 0)		// 错误开始时间清零
+	atomic.StoreInt64(&w.conseErr, 0)		// 连续错误计数清零
+	atomic.AddInt64(&w.allSuccess, 1)		// 总成功计数 +1
 	rwx.Unlock()
+	// 桶成功计数
 	b.Succeed()
 }
 
@@ -118,25 +126,32 @@ func (w *window) Succeed() {
 func (w *window) Fail() {
 	w.rw.Lock()
 	b := w.getBucket()
-	atomic.AddInt64(&w.conseErr, 1)
-	atomic.AddInt64(&w.allFailure, 1)
-	if atomic.LoadInt64(&w.errStart) == 0 {
+	atomic.AddInt64(&w.conseErr, 1)		// 连续错误计数
+	atomic.AddInt64(&w.allFailure, 1)		// 总错误计数
+	if atomic.LoadInt64(&w.errStart) == 0 {		// 错误开始时间(ns)
 		atomic.StoreInt64(&w.errStart, time.Now().UnixNano())
 	}
 	w.rw.Unlock()
+	// 桶错误计数
 	b.Fail()
 }
 
 // Timeout records a timeout in the current perPBucket
 func (w *window) Timeout() {
 	w.rw.Lock()
+
+	// 当前桶
 	b := w.getBucket()
-	atomic.AddInt64(&w.conseErr, 1)
-	atomic.AddInt64(&w.allTimeout, 1)
-	if atomic.LoadInt64(&w.errStart) == 0 {
+
+	// 总计数
+	atomic.AddInt64(&w.conseErr, 1)		// 连续错误计数
+	atomic.AddInt64(&w.allTimeout, 1)		// 总超时计数
+	if atomic.LoadInt64(&w.errStart) == 0 {		// 错误开始时间(ns)
 		atomic.StoreInt64(&w.errStart, time.Now().UnixNano())
 	}
 	w.rw.Unlock()
+
+	// 桶超时计数
 	b.Timeout()
 }
 
@@ -169,25 +184,31 @@ func (w *window) ConseTime() time.Duration {
 
 // ErrorRate returns the error rate calculated over all buckets, expressed as
 // a floating point number (e.g. 0.9 for 90%)
+//
+// 返回错误率
 func (w *window) ErrorRate() float64 {
+	// 总数
 	successes, failures, timeouts := w.Counts()
 
+	// 校验
 	if (successes + failures + timeouts) == 0 {
 		return 0.0
 	}
 
+	// 错误率 = (失败+超时) / 总数
 	return float64(failures+timeouts) / float64(successes+failures+timeouts)
 }
 
+// Samples 返回采样总数
 func (w *window) Samples() int64 {
 	successes, failures, timeouts := w.Counts()
-
 	return successes + failures + timeouts
 }
 
 // Reset resets this perPWindow
 func (w *window) Reset() {
 	w.rw.Lock()
+	// 重置所有变量，包括游标和统计数据
 	atomic.StoreInt32(&w.oldest, 0)
 	atomic.StoreInt32(&w.latest, 0)
 	atomic.StoreInt32(&w.inWindow, 1)
@@ -195,35 +216,53 @@ func (w *window) Reset() {
 	atomic.StoreInt64(&w.allSuccess, 0)
 	atomic.StoreInt64(&w.allFailure, 0)
 	atomic.StoreInt64(&w.allTimeout, 0)
+	// 重置最近的桶
 	w.getBucket().Reset()
 	w.rw.Unlock() // don't use defer
 }
 
 func (w *window) tick() {
 	w.rw.Lock()
-	// 这一段必须在前面，因为latest可能会覆盖oldest
+
+	// 这一段必须在前面，因为 latest 可能会覆盖 oldest
+
+	// 活跃桶数超过阈值
 	if w.inWindow == w.bucketNums {
+
 		// the lastest covered the oldest(latest == oldest)
+		//
+		// 重置 oldest 桶，更新统计计数
 		oldBucket := &w.buckets[w.oldest]
 		atomic.AddInt64(&w.allSuccess, -oldBucket.Successes())
 		atomic.AddInt64(&w.allFailure, -oldBucket.Failures())
 		atomic.AddInt64(&w.allTimeout, -oldBucket.Timeouts())
+
+		// 游标 +1
 		w.oldest++
+
+		// 如果 oldest 桶是环形列表最后一个桶，需要重置游标为 0 ，实现环形队列。
 		if w.oldest >= w.bucketNums {
 			w.oldest = 0
 		}
+
 	} else {
+		// 活跃桶数 +1
 		w.inWindow++
 	}
 
+	// 游标 +1 ，实现环形队列。
 	w.latest++
 	if w.latest >= w.bucketNums {
 		w.latest = 0
 	}
+
+	// 重置最近的桶
 	w.getBucket().Reset()
+
 	w.rw.Unlock()
 }
 
+// 获取最近的桶
 func (w *window) getBucket() *bucket {
 	return &w.buckets[atomic.LoadInt32(&w.latest)]
 }

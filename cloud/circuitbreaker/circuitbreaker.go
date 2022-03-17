@@ -70,13 +70,20 @@ type PanelStateChangeHandler func(key string, oldState, newState State, m Metric
 
 // Options for breaker
 type Options struct {
+
 	// parameters for metricser
+	//
+	// 桶时间
 	BucketTime time.Duration // the time each bucket holds
+	// 桶数目
 	BucketNums int32         // the number of buckets the breaker have
 
 	// parameters for breaker
+	// 冷却时间
 	CoolingTimeout    time.Duration // fixed when create
+	// 探查时间
 	DetectTimeout     time.Duration // fixed when create
+	// 半开成功数
 	HalfOpenSuccesses int32         // halfopen success is the threshold when the breaker is in HalfOpen;
 	// after exceeding consecutively this times, it will change its State from HalfOpen to Closed;
 

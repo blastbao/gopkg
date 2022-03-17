@@ -17,6 +17,7 @@ package circuitbreaker
 import "time"
 
 // Panel is what users should use.
+//
 type Panel interface {
 	Succeed(key string)
 	Fail(key string)

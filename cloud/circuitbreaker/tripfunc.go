@@ -24,6 +24,8 @@ type TripFunc func(Metricer) bool
 type TripFuncWithKey func(string) TripFunc
 
 // ThresholdTripFunc .
+//
+// 错误总数超过阈值
 func ThresholdTripFunc(threshold int64) TripFunc {
 	return func(m Metricer) bool {
 		return m.Failures()+m.Timeouts() >= threshold
@@ -31,6 +33,8 @@ func ThresholdTripFunc(threshold int64) TripFunc {
 }
 
 // ConsecutiveTripFunc .
+//
+// 连续错误数超过阈值
 func ConsecutiveTripFunc(threshold int64) TripFunc {
 	return func(m Metricer) bool {
 		return m.ConseErrors() >= threshold
@@ -38,6 +42,8 @@ func ConsecutiveTripFunc(threshold int64) TripFunc {
 }
 
 // RateTripFunc .
+//
+// 错误率超过阈值，要求满足最小采样数
 func RateTripFunc(rate float64, minSamples int64) TripFunc {
 	return func(m Metricer) bool {
 		samples := m.Samples()
@@ -50,21 +56,32 @@ func RateTripFunc(rate float64, minSamples int64) TripFunc {
 // 2. when the number of samples >= durationSamples and the length of consecutive errors >= duration
 // 3. When the number of consecutive errors >= conseErrors
 // The fuse is opened when any of the above three strategies holds.
+//
+//
+//
 func ConsecutiveTripFuncV2(rate float64, minSamples int64, duration time.Duration, durationSamples, conseErrors int64) TripFunc {
 	return func(m Metricer) bool {
+		// 采样数
 		samples := m.Samples()
+
 		// based on stat
+		// 错误率超过阈值
 		if samples >= minSamples && m.ErrorRate() >= rate {
 			return true
 		}
+
 		// based on continuous time
+		// 连续错误数持续时间超过阈值
 		if duration > 0 && m.ConseErrors() >= durationSamples && m.ConseTime() >= duration {
 			return true
 		}
+
 		// base on consecutive errors
+		// 连续错误数超过阈值
 		if conseErrors > 0 && m.ConseErrors() >= conseErrors {
 			return true
 		}
+
 		return false
 	}
 }

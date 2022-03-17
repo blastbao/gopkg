@@ -21,6 +21,8 @@ import (
 	"github.com/bytedance/gopkg/internal/runtimex"
 )
 
+
+// Counter 计数器
 type Counter interface {
 	Add(i int64)
 	Get() int64
