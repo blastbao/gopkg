@@ -80,8 +80,10 @@ type Options struct {
 
 	// parameters for breaker
 	// 冷却时间
+	// 在 Open 状态的持续时间
 	CoolingTimeout    time.Duration // fixed when create
-	// 探查时间
+	// 探查时间。
+	// 在 HalfOpen 状态，相邻两个探查请求需要间隔至少 DetectTimeout 。
 	DetectTimeout     time.Duration // fixed when create
 	// 半开成功数
 	HalfOpenSuccesses int32         // halfopen success is the threshold when the breaker is in HalfOpen;

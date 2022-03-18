@@ -68,6 +68,7 @@ func newBreaker(options Options) (*breaker, error) {
 		options.CoolingTimeout = defaultCoolingTimeout
 	}
 
+	// 在半开状态，相邻两个探查请求需要间隔至少 DetectTimeout
 	if options.DetectTimeout <= 0 {
 		options.DetectTimeout = defaultDetectTimeout
 	}
@@ -87,6 +88,7 @@ func newBreaker(options Options) (*breaker, error) {
 		return nil, err
 	}
 
+	//
 	breaker := &breaker{
 		rw:       syncx.NewRWMutex(),
 		metricer: window,
@@ -94,6 +96,7 @@ func newBreaker(options Options) (*breaker, error) {
 		state:    Closed,
 	}
 
+	//
 	breaker.options = Options{
 		BucketTime:                options.BucketTime,
 		BucketNums:                options.BucketNums,
@@ -106,6 +109,7 @@ func newBreaker(options Options) (*breaker, error) {
 		Now:                       options.Now,
 	}
 
+	//
 	return breaker, nil
 }
 
@@ -121,12 +125,17 @@ func (b *breaker) Succeed() {
 		b.rw.Lock()
 		// 双重检查 State，防止执行两次 BreakerStateChangeHandler
 		if b.State() == HalfOpen {
+			// 半开成功数
 			atomic.AddInt32(&b.halfopenSuccess, 1)
+			// 半开成功数超过阈值
 			if atomic.LoadInt32(&b.halfopenSuccess) >= b.options.HalfOpenSuccesses {
+				// 回调通知
 				if b.options.BreakerStateChangeHandler != nil {
 					go b.options.BreakerStateChangeHandler(HalfOpen, Closed, b.metricer)
 				}
+				// 重置统计对象
 				b.metricer.Reset()
+				// 将 CB 状态改为 Closed
 				atomic.StoreInt32((*int32)(&b.state), int32(Closed))
 			}
 		}
@@ -211,20 +220,27 @@ func (b *breaker) isAllowed() bool {
 	rwx.Lock()
 	switch b.State() {
 	case Open:
+		// 当前时间
 		now := b.now()
+		// 冷却期，保持 Open 状态，拒绝请求
 		if b.openTime.Add(b.options.CoolingTimeout).After(now) {
 			rwx.Unlock()
 			return false
 		}
+		// 超过冷却期，进入 HalfOpen 状态
 		rwx.Unlock()
 		b.rw.Lock()
 		if b.State() == Open {
 			// cooling timeout, then become HalfOpen
+			// 回调通知
 			if b.options.BreakerStateChangeHandler != nil {
 				go b.options.BreakerStateChangeHandler(Open, HalfOpen, b.metricer)
 			}
+			// 进入 HalfOpen 状态
 			atomic.StoreInt32((*int32)(&b.state), int32(HalfOpen))
+			// 重置半开成功率
 			atomic.StoreInt32(&b.halfopenSuccess, 0)
+			// 设置半开最近尝试时间
 			b.lastRetryTime = now
 			b.rw.Unlock()
 		} else {
@@ -233,24 +249,31 @@ func (b *breaker) isAllowed() bool {
 			return false
 		}
 	case HalfOpen:
+		// 当前时间
 		now := b.now()
+
+		// 在半开状态，相邻两个探查请求需要间隔至少 DetectTimeout
 		if b.lastRetryTime.Add(b.options.DetectTimeout).After(now) {
 			rwx.Unlock()
 			return false
 		}
+
 		rwx.Unlock()
 		b.rw.Lock()
 		if b.State() == HalfOpen {
+			// 更新最近探查时间
 			b.lastRetryTime = now
 		} else if b.State() == Open { // callback may change the state to open
 			b.rw.Unlock()
 			return false
 		}
 		b.rw.Unlock()
+
 	case Closed:
 		rwx.Unlock()
 	}
 
+	// 放过探查请求
 	return true
 }
 
